@@ -614,6 +614,7 @@ jobs:
         shell: bash
         run: |
           set -e
+          set -o pipefail
           cd flutter-project
 
           echo "=== Flutter Version ==="
@@ -735,9 +736,15 @@ jobs:
             if try_pub_get; then
               echo "✅ flutter pub get succeeded"
 
+              # Auto-fix isu yang dikenali analyzer (deprecated API, import, dll) sebelum build
+              echo "=== Menjalankan dart fix --apply ==="
+              dart fix --apply 2>&1 | tee -a "$PUB_LOG" || true
+
+              BUILD_LOG="../build_error.log"
+
               # Try build
               if [ "$BUILD_MODE" = "release" ]; then
-                if flutter build apk --release; then
+                if flutter build apk --release 2>&1 | tee "$BUILD_LOG"; then
                   SUCCESS=true
                   echo "✅ Build successful!"
                   break
@@ -747,7 +754,7 @@ jobs:
                   rm -rf build .dart_tool
                 fi
               else
-                if flutter build apk --debug; then
+                if flutter build apk --debug 2>&1 | tee "$BUILD_LOG"; then
                   SUCCESS=true
                   echo "✅ Build successful!"
                   break
@@ -768,6 +775,14 @@ jobs:
             echo "❌ Build failed after $MAX_RETRIES attempts"
             echo "Last pub get output:"
             cat "$PUB_LOG" || true
+            # Simpan ringkasan error (baris yang mengandung 'Error' atau 'error:') buat dikirim balik ke user
+            {
+              echo "=== Ringkasan Error ==="
+              grep -iE "error:|Error\b" "$PUB_LOG" 2>/dev/null | tail -n 40
+              if [ -f "$BUILD_LOG" ]; then
+                grep -iE "error:|Error\b" "$BUILD_LOG" 2>/dev/null | tail -n 40
+              fi
+            } > ../error_summary.txt || true
             exit 1
           fi
 
@@ -783,6 +798,14 @@ jobs:
           else
             echo "APK Flutter release tidak ditemukan, skip signing"
           fi
+
+      - name: Upload error log (jika build gagal)
+        if: failure() && env.type == 'flutter'
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-log
+          path: error_summary.txt
+          if-no-files-found: ignore
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
